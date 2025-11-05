@@ -18,6 +18,7 @@ class Settings:
         "http://127.0.0.1:3001",
         "http://localhost:8080",  # Alternative frontend port
         "http://127.0.0.1:8080",
+        "*"  # Allow all origins for development
     ]
     
     CORS_ALLOW_CREDENTIALS = True
@@ -28,6 +29,7 @@ class Settings:
     DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
     BATTERS_CSV = os.path.join(DATA_DIR, "BBL_batters.csv")
     BOWLERS_CSV = os.path.join(DATA_DIR, "BBL_bowlers.csv")
+    MATCHUPS_CSV = os.path.join(DATA_DIR, "Matchupsdata.csv")
     
     # BBL Teams
     BBL_TEAMS = [

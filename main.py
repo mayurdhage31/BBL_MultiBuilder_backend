@@ -34,13 +34,15 @@ app.add_middleware(
 # Global data storage
 batters_df = None
 bowlers_df = None
+matchups_df = None
 
 def load_data():
     """Load CSV data into pandas DataFrames"""
-    global batters_df, bowlers_df
+    global batters_df, bowlers_df, matchups_df
     try:
         batters_df = pd.read_csv(settings.BATTERS_CSV)
         bowlers_df = pd.read_csv(settings.BOWLERS_CSV)
+        matchups_df = pd.read_csv(settings.MATCHUPS_CSV)
         logger.info("Data loaded successfully")
     except Exception as e:
         logger.error(f"Error loading data: {e}")
@@ -59,12 +61,150 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "data_loaded": batters_df is not None and bowlers_df is not None}
+    return {"status": "healthy", "data_loaded": batters_df is not None and bowlers_df is not None and matchups_df is not None}
 
 @app.get("/teams")
 async def get_teams():
     """Get list of BBL teams"""
     return {"teams": settings.BBL_TEAMS}
+
+@app.get("/matchups")
+async def get_matchups():
+    """Get available matchups from the dataset"""
+    if matchups_df is None:
+        raise HTTPException(status_code=500, detail="Matchup data not loaded")
+    
+    # Get unique matchups from the dataset
+    unique_matchups = matchups_df['Matchup'].unique()
+    
+    matchups = []
+    for matchup in unique_matchups:
+        # Extract teams from matchup string (e.g., "Sydney Sixers vs Perth Scorchers")
+        teams = matchup.split(' vs ')
+        if len(teams) == 2:
+            matchups.append({
+                "id": matchup.replace(' ', '_').replace('vs', 'vs'),
+                "matchup": matchup,
+                "team1": teams[0].strip(),
+                "team2": teams[1].strip()
+            })
+    
+    return {"matchups": matchups}
+
+@app.get("/matchup-players")
+async def get_matchup_players(matchup: str):
+    """Get players for a specific matchup"""
+    if matchups_df is None:
+        raise HTTPException(status_code=500, detail="Matchup data not loaded")
+    
+    # Filter matchup data for the specific matchup
+    matchup_players = matchups_df[matchups_df['Matchup'] == matchup]
+    
+    if matchup_players.empty:
+        raise HTTPException(status_code=404, detail="Matchup not found")
+    
+    players = []
+    for _, player in matchup_players.iterrows():
+        players.append({
+            "PlayerName": player['PlayerName'],
+            "TeamName": player['TeamName'],
+            "Matchup": player['Matchup']
+        })
+    
+    return players
+
+@app.get("/player-stats/{player_name}")
+async def get_player_stats(player_name: str):
+    """Get detailed stats for a specific player"""
+    if batters_df is None or bowlers_df is None:
+        raise HTTPException(status_code=500, detail="Player data not loaded")
+    
+    player_stats = {"name": player_name}
+    
+    # Check if player is a batter
+    batter_data = batters_df[batters_df['BatsmanName'] == player_name]
+    if not batter_data.empty:
+        batter = batter_data.iloc[0]
+        player_stats["batting_stats"] = {
+            "team": batter['Team'],
+            "total_innings": int(batter['Total.Innings']),
+            "total_runs": int(batter['Total.Runs']),
+            "runs_10_plus_pct": batter['Percentage.of.No.of.times.BatsmanName.scored.more.than.10.runs'],
+            "runs_20_plus_pct": batter['Percentage.of.No.of.times.BatsmanName.scored.more.than.20.runs'],
+            "top_scorer_pct": batter['Percentage.of.Top.Team.Runs.Scorer'],
+            "six_hit_pct": batter['Percentage.of.No.of.Times.BatsmanName.Hit.Atleast.One.Six'],
+            "runs_10_plus_count": int(batter['No.of.times.BatsmanName.scored.more.than.10.runs']),
+            "runs_20_plus_count": int(batter['No.of.times.BatsmanName.scored.more.than.20.runs']),
+            "top_scorer_count": int(batter['Top.Team.Runs.Scorer']),
+            "six_hit_count": int(batter['No.of.Times.BatsmanName.Hit.Atleast.One.Six'])
+        }
+    
+    # Check if player is a bowler
+    bowler_data = bowlers_df[bowlers_df['BowlerName'] == player_name]
+    if not bowler_data.empty:
+        bowler = bowler_data.iloc[0]
+        player_stats["bowling_stats"] = {
+            "team": bowler['bowling_team'],
+            "total_innings": int(bowler['Innings.by.Bowler']),
+            "total_wickets": int(bowler['Total.Wickets']),
+            "wicket_1_plus_pct": bowler['Percentage.of.No.of.times.BowlerName.Took.Atleast.1.Wicket'],
+            "wicket_2_plus_pct": bowler['Percentage.of.No.of.times.BowlerName.Took.Atleast.2.Wicket'],
+            "top_wicket_taker_pct": bowler['Percentage.of.Top.Wicket.Taker.for.Team'],
+            "wicket_1_plus_count": int(bowler['No.of.times.BowlerName.Took.Atleast.1.Wicket']),
+            "wicket_2_plus_count": int(bowler['No.of.times.BowlerName.Took.Atleast.2.Wicket']),
+            "top_wicket_taker_count": int(bowler['Top.Wicket.Taker.for.Team'])
+        }
+    
+    if "batting_stats" not in player_stats and "bowling_stats" not in player_stats:
+        raise HTTPException(status_code=404, detail="Player not found")
+    
+    return player_stats
+
+@app.get("/team-stats/{team_name}")
+async def get_team_stats(team_name: str):
+    """Get player stats for a specific team from matchup data"""
+    if matchups_df is None or batters_df is None or bowlers_df is None:
+        raise HTTPException(status_code=500, detail="Data not loaded")
+    
+    # Get players for the team from matchups data
+    team_players = matchups_df[matchups_df['TeamName'] == team_name]['PlayerName'].tolist()
+    
+    if not team_players:
+        raise HTTPException(status_code=404, detail=f"No players found for team: {team_name}")
+    
+    player_stats = []
+    
+    for player_name in team_players:
+        player_stat = {"name": player_name, "batting_stats": None, "bowling_stats": None}
+        
+        # Get batting stats
+        batter_data = batters_df[batters_df['BatsmanName'] == player_name]
+        if not batter_data.empty:
+            batter = batter_data.iloc[0]
+            player_stat["batting_stats"] = {
+                "total_innings": int(batter['Total.Innings']),
+                "total_runs": int(batter['Total.Runs']),
+                "runs_10_plus_pct": batter['Percentage.of.No.of.times.BatsmanName.scored.more.than.10.runs'],
+                "runs_20_plus_pct": batter['Percentage.of.No.of.times.BatsmanName.scored.more.than.20.runs'],
+                "six_hit_pct": batter['Percentage.of.No.of.Times.BatsmanName.Hit.Atleast.One.Six'],
+                "top_scorer_pct": batter['Percentage.of.Top.Team.Runs.Scorer']
+            }
+        
+        # Get bowling stats
+        bowler_data = bowlers_df[bowlers_df['BowlerName'] == player_name]
+        if not bowler_data.empty:
+            bowler = bowler_data.iloc[0]
+            player_stat["bowling_stats"] = {
+                "total_innings": int(bowler['Innings.by.Bowler']),
+                "total_wickets": int(bowler['Total.Wickets']),
+                "wicket_1_plus_pct": bowler['Percentage.of.No.of.times.BowlerName.Took.Atleast.1.Wicket'],
+                "wicket_2_plus_pct": bowler['Percentage.of.No.of.times.BowlerName.Took.Atleast.2.Wicket'],
+                "top_wicket_taker_pct": bowler['Percentage.of.Top.Wicket.Taker.for.Team']
+            }
+        
+        player_stats.append(player_stat)
+    
+    return {"team": team_name, "players": player_stats}
 
 @app.get("/matches")
 async def get_available_matches():
